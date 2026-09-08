@@ -1,0 +1,35 @@
+{
+  "name": "@wbsj100/claude-code-statusline-node",
+  "version": "1.0.0",
+  "description": "High-performance, fault-tolerant, native Node.js statusline for Claude Code CLI (ADR-015)",
+  "main": "statusline.js",
+  "bin": {
+    "claude-statusline": "statusline.js"
+  },
+  "scripts": {
+    "start": "node statusline.js",
+    "test": "node statusline.js"
+  },
+  "keywords": [
+    "claude-code",
+    "statusline",
+    "anthropic",
+    "litellm",
+    "deepseek",
+    "antigravity",
+    "adr-015"
+  ],
+  "author": "Wilson B. S. Junior <wbsj100@gmail.com> (https://github.com/wbsj100)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wbsj100/claude-code-statusline-node.git"
+  },
+  "bugs": {
+    "url": "https://github.com/wbsj100/claude-code-statusline-node/issues"
+  },
+  "homepage": "https://github.com/wbsj100/claude-code-statusline-node#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
