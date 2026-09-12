@@ -30,6 +30,7 @@ Nas versões anteriores e em scripts baseados em Shell (`Bash` / `jq` / `awk`), 
 Esta implementação resolve todos os gargalos através dos seguintes pilares:
 
 - 🚀 **Leitura por Cauda de Buffer (`fs.readSync`)**: Em vez de carregar o arquivo inteiro, lê apenas os últimos **4 KB** do arquivo de log, garantindo execução constante em **<3 milissegundos**, independentemente de o arquivo ter 1 KB ou 1 GB.
+- 🔄 **Compatibilidade v2.1.268+**: Suporte completo ao novo esquema JSON da CLI do Claude Code (resolvendo objetos no campo `workspace` e protegendo o cálculo de porcentagem contra `NaN`).
 - 🟢 **Check de Saúde do Proxy em Tempo Real (<15ms)**: Monitoramento socket da porta local `:4000` (LiteLLM Proxy / DeepSeek), alertando visualmente se a conexão com o provedor estiver ativa ou offline.
 - 🌿 **Detecção Automática de Git Branch**: Identifica de forma não-bloqueante em qual branch o desenvolvedor está trabalhando.
 - 🛡️ **Zero-Crash Safety**: Tratamento de exceções absoluto (`try-catch` com fallback), garantindo que falhas de leitura no Windows nunca emitam tracebacks no terminal.
@@ -37,11 +38,13 @@ Esta implementação resolve todos os gargalos através dos seguintes pilares:
 
 ---
 
-## 🖥️ Preview do Output
+## 🧙‍♂️ Skill de Gerenciamento Automatizado
 
-```text
-🟢 :4000 │ 🤖 DeepSeek V4 │ [■■■□□□□□□□] 30% (300.0k) │ 🌿 main │ 📁 SecondBrain
-```
+O projeto inclui uma **Skill nativa para Claude Code / Antigravity**: [`skills/statusline-setup/SKILL.md`](./skills/statusline-setup/SKILL.md).
+
+Ao instalar a skill em `~/.claude/skills/statusline-setup`, você ganha acesso aos comandos:
+- `/statusline-setup`: Validação e instalação automática da statusline no `settings.json`.
+- `/statusline-doctor`: Diagnóstico de latência (<10ms), verificação da porta `:4000` e integridade.
 
 ---
 
