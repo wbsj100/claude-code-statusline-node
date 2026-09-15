@@ -1,20 +1,154 @@
 /**
  * Statusline Definitiva de Produção (ADR-015 — Node.js Nativo)
- * 
+ *
  * Recursos:
  * 1. Leitura de Contexto Real (context_window + Auto-Discovery de Transcripts de Projeto).
  * 2. Suporte total a Windows (Path Normalization sem bugs de barras).
  * 3. Check de saúde do Proxy LiteLLM (:4000) em tempo real (<15ms socket check).
  * 4. Detecção leve de Git Branch (🌿 main).
  * 5. Proteção Anti-Crash Absoluta com visual mono-width (■/□).
+ * 6. Saldo dos provedores (DeepSeek / OpenRouter) com cache em disco.
  */
 
 const fs = require('fs');
 const path = require('path');
 const net = require('net');
+const https = require('https');
 
 const MAX_CONTEXT_TOKENS = 1000000;
 const BAR_WIDTH = 10;
+
+// --- Saldo de provedores (cache em disco, TTL longo) -------------------------
+// O statusline roda a cada mensagem: consultar as APIs de saldo no caminho
+// critico adicionaria latencia inaceitavel. Estrategia: ler SEMPRE do cache
+// (sincrono, sub-ms) e disparar a atualizacao em background (fire-and-forget)
+// quando o TTL vence, de modo que o render atual nunca espera rede.
+const SALDO_TTL_MS = 10 * 60 * 1000; // 10 min
+const HOME_DIR = process.env.USERPROFILE || process.env.HOME || '.';
+const SALDO_CACHE = path.join(HOME_DIR, '.claude', 'saldo-cache.json');
+const SEGREDOS = path.join(HOME_DIR, '.secrets', 'litellm.env');
+
+function lerSegredos() {
+  try {
+    const txt = fs.readFileSync(SEGREDOS, 'utf8');
+    const out = {};
+    for (const linha of txt.split(/\r?\n/)) {
+      const m = linha.match(/^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.+?)\s*$/);
+      if (m) out[m[1]] = m[2].replace(/^["']|["']$/g, '');
+    }
+    return out;
+  } catch (e) {
+    return {};
+  }
+}
+
+function lerCacheSaldo() {
+  try {
+    return JSON.parse(fs.readFileSync(SALDO_CACHE, 'utf8'));
+  } catch (e) {
+    return null;
+  }
+}
+
+function httpGetJson(url, headers, timeoutMs) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (v) => { if (!done) { done = true; resolve(v); } };
+    try {
+      const req = https.get(url, { headers, timeout: timeoutMs }, (res) => {
+        let body = '';
+        res.on('data', (d) => { body += d; });
+        res.on('end', () => {
+          try { finish(JSON.parse(body)); } catch (e) { finish(null); }
+        });
+      });
+      req.on('timeout', () => { req.destroy(); finish(null); });
+      req.on('error', () => finish(null));
+    } catch (e) {
+      finish(null);
+    }
+  });
+}
+
+// Promises de atualizacao de saldo, aguardadas SOMENTE no encerramento do
+// processo (ver finish). Declaradas antes de quem as usa.
+const pendentesSaldo = [];
+
+// Fire-and-forget: nunca aguardado pelo render. Se falhar, o cache anterior
+// permanece valido e o badge continua exibindo o ultimo valor conhecido.
+function atualizarSaldoBackground() {
+  const seg = lerSegredos();
+  if (!seg.DEEPSEEK_API_KEY && !seg.OPENROUTER_API_KEY) return;
+
+  const dsJob = seg.DEEPSEEK_API_KEY
+    ? httpGetJson('https://api.deepseek.com/user/balance',
+        { Authorization: `Bearer ${seg.DEEPSEEK_API_KEY}` }, 4000)
+        .then((d) => {
+          if (!d || !Array.isArray(d.balance_infos)) return null;
+          const b = d.balance_infos[0] || {};
+          const n = parseFloat(b.total_balance);
+          return isNaN(n) ? null : { usd: n, cur: b.currency || 'USD' };
+        })
+    : Promise.resolve(null);
+
+  const orJob = seg.OPENROUTER_API_KEY
+    ? httpGetJson('https://openrouter.ai/api/v1/key',
+        { Authorization: `Bearer ${seg.OPENROUTER_API_KEY}` }, 4000)
+        .then((d) => {
+          const k = d && d.data;
+          if (!k) return null;
+          const rem = k.limit_remaining;
+          const used = parseFloat(k.usage);
+          const temTeto = rem !== null && rem !== undefined && !isNaN(parseFloat(rem));
+          return {
+            usd: temTeto ? parseFloat(rem) : null,
+            usado: isNaN(used) ? null : used
+          };
+        })
+    : Promise.resolve(null);
+
+  const gravacao = Promise.all([dsJob, orJob])
+    .then(([ds, orr]) => {
+      try {
+        fs.writeFileSync(SALDO_CACHE,
+          JSON.stringify({ ts: Date.now(), deepseek: ds, openrouter: orr }));
+      } catch (e) {}
+    })
+    .catch(() => {});
+
+  // O processo nao pode encerrar antes da gravacao: sem esta espera explicita,
+  // o statusline imprime e chama process.exit(0), matando as requisicoes em voo
+  // e deixando o cache permanentemente frio. O render NAO aguarda este promise -
+  // apenas o encerramento do processo aguarda (ver finish()).
+  pendentesSaldo.push(gravacao);
+}
+
+function badgeSaldo() {
+  const c = lerCacheSaldo();
+  if (!c) {
+    atualizarSaldoBackground(); // cache frio: dispara e omite o badge neste render
+    return '';
+  }
+  if (Date.now() - (c.ts || 0) >= SALDO_TTL_MS) atualizarSaldoBackground();
+
+  const ds = c.deepseek, orr = c.openrouter;
+  const partes = [];
+  if (ds && typeof ds.usd === 'number') {
+    partes.push(`💵 DS $${ds.usd < 1 ? ds.usd.toFixed(2) : ds.usd.toFixed(1)}`);
+  }
+  if (orr) {
+    // Sem teto configurado, limit_remaining vem null: exibe o gasto acumulado.
+    if (typeof orr.usd === 'number') {
+      partes.push(`OR $${orr.usd < 1 ? orr.usd.toFixed(2) : orr.usd.toFixed(1)}`);
+    } else if (typeof orr.usado === 'number') {
+      partes.push(`OR gasto $${orr.usado.toFixed(0)}`);
+    }
+  }
+  if (!partes.length) return '';
+  const idade = Math.round((Date.now() - (c.ts || 0)) / 60000);
+  return ` │ ${partes.join(' · ')}${idade > 15 ? ` (${idade}m)` : ''}`;
+}
+
 
 function formatModelName(rawModel) {
   if (!rawModel) return 'DeepSeek V4';
@@ -209,8 +343,9 @@ function buildStatusLine(inputData, proxyOnline) {
 
     const proxyBadge = proxyOnline ? `${green}🟢 :4000${reset}` : `${red}🔴 :4000${reset}`;
     const branchBadge = gitBranch ? ` │ ${magenta}🌿 ${gitBranch}${reset}` : '';
+    const saldoBadge = badgeSaldo();
 
-    return `${proxyBadge} │ ${cyan}🤖 ${modelName}${reset} │ ${green}[${progressBar}] ${percentage}%${reset} (${formattedTokens})${branchBadge} │ ${yellow}📁 ${workspace}${reset}`;
+    return `${proxyBadge} │ ${cyan}🤖 ${modelName}${reset} │ ${green}[${progressBar}] ${percentage}%${reset} (${formattedTokens})${branchBadge}${saldoBadge} │ ${yellow}📁 ${workspace}${reset}`;
   } catch (e) {
     return `🟢 :4000 │ 🤖 DeepSeek V4 │ [□□□□□□□□□□] 0% │ 📁 SecondBrain`;
   }
@@ -222,8 +357,21 @@ let processed = false;
 function finish(input, online) {
   if (processed) return;
   processed = true;
-  console.log(buildStatusLine(input, online));
-  process.exit(0);
+
+  // 1. Imprime IMEDIATAMENTE: o render nunca espera rede.
+  const linha = buildStatusLine(input, online);
+  console.log(linha);
+
+  // 2. So o encerramento aguarda as gravacoes de saldo pendentes. Teto de
+  //    seguranca para nao segurar o statusline caso a rede esteja lenta.
+  if (!pendentesSaldo.length) {
+    process.exit(0);
+    return;
+  }
+  Promise.race([
+    Promise.all(pendentesSaldo),
+    new Promise((r) => setTimeout(r, 4500))
+  ]).finally(() => process.exit(0));
 }
 
 if (process.stdin.isTTY) {
